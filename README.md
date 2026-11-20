@@ -17,9 +17,11 @@ java MobileLinux.java
 
 | Команда | Что делает |
 |---|---|
-| `creato <файл>` | создаёт файл (любое расширение: `.py`, `.cpp`, `.java`…) и открывает редактор |
+| `creato <файл>` | создаёт файл (любое расширение: `.py`, `.js`, `.cpp`, `.java`…) и открывает редактор |
 | `download pkt python` | устанавливает пакет python (Jython 2.7.4) |
+| `download pkt javascript` | устанавливает пакет javascript (Rhino 1.7.15) |
 | `start python <файл.py>` | ищет файл и запускает его |
+| `start javascript <файл.js>` | ищет файл и запускает его (`start js …` тоже работает) |
 | `python <файл.py>` | запускает Python напрямую |
 | `exit` | выход |
 
@@ -32,18 +34,18 @@ java MobileLinux.java
 - **`..`** (две точки) — вернуться к тексту
 - Работают также стрелки, Home, End, PgUp, PgDn
 
-## Пакет python
+## Пакеты
 
-`download pkt python` скачивает [Jython](https://www.jython.org/) 2.7.4 с Maven Central
-(`repo1.maven.org`). Нужен интернет. Это **Python 2.7** на Java: `print("текст")` работает,
-f-строк нет. Если в файле есть не-латинские буквы, первой строкой добавь:
+Пакеты скачиваются с Maven Central (`repo1.maven.org`), нужен интернет. Если рядом лежит
+файл пакета (`jython-standalone*.jar` или `rhino-1*.jar`), он будет использован вместо скачивания.
 
-```
-# -*- coding: utf-8 -*-
-```
-
-Если рядом лежит файл `jython-standalone*.jar`, он будет использован вместо скачивания.
+- **python** — [Jython](https://www.jython.org/) 2.7.4. Это **Python 2.7** на Java: `print("текст")`
+  работает, f-строк нет. Если в файле есть не-латинские буквы, первой строкой добавь:
+  `# -*- coding: utf-8 -*-`
+- **javascript** — [Rhino](https://mozilla.github.io/rhino/) 1.7.15 (JavaScript на Java). Вывод —
+  через `console.log("текст")` (внутри Rhino есть ещё `print`).
 
 ## Лицензия / License
 
-MIT, см. файл `LICENSE`. Jython распространяется на собственных условиях лицензии.
+MIT, см. файл `LICENSE`. Jython и Rhino распространяются на собственных условиях
+(Rhino — MPL 2.0); они не входят в этот репозиторий и скачиваются отдельно.
