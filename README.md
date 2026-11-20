@@ -18,6 +18,12 @@ java MobileLinux.java
 | Команда | Что делает |
 |---|---|
 | `creato <файл>` | создаёт файл (любое расширение: `.py`, `.js`, `.cpp`, `.java`…) и открывает редактор |
+| `pkt search [слово]` | поиск пакетов |
+| `pkt install <пакет>` | установить пакет (то же, что `download pkt <пакет>`) |
+| `pkt remove <пакет>` | удалить пакет |
+| `pkt list` | показать установленные пакеты |
+| `pkt show <пакет>` | информация о пакете |
+| `pkt upgrade` | проверить обновления |
 | `download pkt python` | устанавливает пакет python (Jython 2.7.4) |
 | `download pkt javascript` | устанавливает пакет javascript (Rhino 1.7.15) |
 | `start python <файл.py>` | ищет файл и запускает его |
