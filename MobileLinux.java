@@ -70,8 +70,8 @@ public class MobileLinux {
         out.println();
         out.println("Working with files:");
         out.println(" - Create:  creato <file>");
-        out.println(" - Install: download pkt python");
-        out.println(" - Start:   start python <file.py>");
+        out.println(" - Install: download pkt <python|javascript>");
+        out.println(" - Start:   start <python|javascript> <file>");
         out.println(" - Run:     python <file.py>");
         out.println(" - Exit:    exit");
         out.println();
@@ -80,9 +80,38 @@ public class MobileLinux {
     }
 
     // ---------- пакеты ----------
-    static final String PY_VER = "2.7.4";
-    static final String PY_URL =
-            "https://repo1.maven.org/maven2/org/python/jython-standalone/2.7.4/jython-standalone-2.7.4.jar";
+    static final class Pkg {
+        final String name, ver, url, label, localGlob, mainClass, hint;
+        final long minBytes;
+        Pkg(String name, String ver, String url, String label, String localGlob, long minBytes,
+            String mainClass, String hint) {
+            this.name = name; this.ver = ver; this.url = url; this.label = label;
+            this.localGlob = localGlob; this.minBytes = minBytes; this.mainClass = mainClass; this.hint = hint;
+        }
+        String fileName() { return url.substring(url.lastIndexOf('/') + 1); }
+    }
+
+    static final Pkg PY = new Pkg("python", "2.7.4",
+            "https://repo1.maven.org/maven2/org/python/jython-standalone/2.7.4/jython-standalone-2.7.4.jar",
+            "Jython", "jython-standalone*.jar", 5_000_000L, null,
+            "Это Jython (Python 2.7 на Java): print(\"текст\") работает, f-строк нет.");
+    static final Pkg JS = new Pkg("javascript", "1.7.15",
+            "https://repo1.maven.org/maven2/org/mozilla/rhino/1.7.15/rhino-1.7.15.jar",
+            "Rhino", "rhino-1*.jar", 500_000L, "org.mozilla.javascript.tools.shell.Main",
+            "Это Rhino (JavaScript на Java): работает console.log(\"текст\").");
+
+    /** Добавляет в Rhino обычный console.log (в самом Rhino есть только print). */
+    static final String JS_PRELUDE = "var console={};"
+            + "console.log=console.info=console.warn=console.error=function(){"
+            + "var a=[];for(var i=0;i<arguments.length;i++)a.push(String(arguments[i]));"
+            + "print(a.join(' '));};";
+
+    static Pkg pkgByName(String n) {
+        n = n.toLowerCase();
+        if (n.equals("python") || n.equals("python3") || n.equals("py")) return PY;
+        if (n.equals("javascript") || n.equals("js")) return JS;
+        return null;
+    }
 
     static void pause(int ms) { try { Thread.sleep(ms); } catch (InterruptedException ignored) {} }
 
@@ -94,9 +123,9 @@ public class MobileLinux {
             Paths.get(System.getProperty("java.io.tmpdir"), "mobilelinux-pkg")};
     }
 
-    static Path findPyJar() {
+    static Path findJar(Pkg p) {
         for (Path d : pkgDirs()) {
-            Path j = d.resolve("jython-standalone-" + PY_VER + ".jar");
+            Path j = d.resolve(p.fileName());
             if (Files.isRegularFile(j)) return j;
         }
         return null;
@@ -108,6 +137,22 @@ public class MobileLinux {
             try {
                 Files.createDirectories(d);
                 if (Files.isWritable(d)) return d;
+            } catch (IOException ignored) {}
+        }
+        return null;
+    }
+
+    /** Ищет файл пакета, который пользователь уже скачал сам. */
+    static Path findLocalJar(Pkg p) {
+        String home = System.getProperty("user.home");
+        String[] ds = {System.getProperty("user.dir"), home, "/sdcard/Download",
+                "/storage/emulated/0/Download", "/sdcard", home + "/storage/downloads"};
+        for (String d : ds) {
+            if (d == null) continue;
+            Path dir = Paths.get(d);
+            if (!Files.isDirectory(dir)) continue;
+            try (DirectoryStream<Path> st = Files.newDirectoryStream(dir, p.localGlob)) {
+                for (Path x : st) if (Files.isRegularFile(x) && Files.size(x) > p.minBytes) return x;
             } catch (IOException ignored) {}
         }
         return null;
@@ -133,36 +178,24 @@ public class MobileLinux {
         out.println(" Done");
     }
 
-    /** download pkt python */
+    /** download pkt <пакет> */
     static void downloadCmd(String args) throws IOException {
         String[] a = args.trim().split("\\s+");
-        if (a.length < 2 || !a[0].equals("pkt")) { out.println("Использование: download pkt python"); return; }
-        if (!a[1].equals("python")) { out.println("E: пакет '" + a[1] + "' не найден. Пока есть только: python"); return; }
-        installPython();
-    }
-
-    /** Ищет файл jython-standalone*.jar, который пользователь уже скачал сам. */
-    static Path findLocalJar() {
-        String home = System.getProperty("user.home");
-        String[] ds = {System.getProperty("user.dir"), home, "/sdcard/Download",
-                "/storage/emulated/0/Download", "/sdcard", home + "/storage/downloads"};
-        for (String d : ds) {
-            if (d == null) continue;
-            Path dir = Paths.get(d);
-            if (!Files.isDirectory(dir)) continue;
-            try (DirectoryStream<Path> st = Files.newDirectoryStream(dir, "jython-standalone*.jar")) {
-                for (Path x : st) if (Files.isRegularFile(x) && Files.size(x) > 5_000_000) return x;
-            } catch (IOException ignored) {}
-        }
-        return null;
-    }
-
-    static void installPython() throws IOException {
-        if (findPyJar() != null) {
-            out.println("python is already the newest version (" + PY_VER + ").");
+        if (a.length < 2 || !a[0].equals("pkt")) {
+            out.println("Использование: download pkt python   или   download pkt javascript");
             return;
         }
-        Path local = findLocalJar();
+        Pkg p = pkgByName(a[1]);
+        if (p == null) { out.println("E: пакет '" + a[1] + "' не найден. Есть: python, javascript"); return; }
+        installPkg(p);
+    }
+
+    static void installPkg(Pkg p) throws IOException {
+        if (findJar(p) != null) {
+            out.println(p.name + " is already the newest version (" + p.ver + ").");
+            return;
+        }
+        Path local = findLocalJar(p);
         // --- начало: как в Termux ---
         out.println("Checking availability of repository:");
         long size;
@@ -175,11 +208,11 @@ public class MobileLinux {
         } else {
             out.print("[*] repo1.maven.org: ");
             out.flush();
-            size = headSize(PY_URL);
+            size = headSize(p.url);
             if (size <= 0) {
                 out.println("failed");
-                out.println("E: нет связи с репозиторием, и рядом нет файла jython-standalone*.jar.");
-                out.println("   Положи файл в папку " + System.getProperty("user.dir") + " и повтори команду.");
+                out.println("E: нет связи с репозиторием, и рядом нет файла " + p.localGlob + ".");
+                out.println("   Проверь интернет или положи файл в папку " + System.getProperty("user.dir"));
                 return;
             }
             pause(300);
@@ -189,7 +222,7 @@ public class MobileLinux {
         step("Building dependency tree", 350);
         step("Reading state information", 300);
         out.println("The following NEW packages will be installed:");
-        out.println("  python");
+        out.println("  " + p.name);
         out.println("0 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.");
         out.println("Need to get " + mb(size) + " of archives.");
         out.println("After this operation, " + mb(size) + " of additional disk space will be used.");
@@ -204,15 +237,15 @@ public class MobileLinux {
 
         Path dir = writablePkgDir();
         if (dir == null) { out.println("E: некуда сохранять пакет (нет доступной для записи папки)."); return; }
-        Path jar = dir.resolve("jython-standalone-" + PY_VER + ".jar");
-        Path part = dir.resolve(jar.getFileName() + ".part");
+        Path jar = dir.resolve(p.fileName());
+        Path part = dir.resolve(p.fileName() + ".part");
         String src = local != null ? "file:" + local : "https://repo1.maven.org/maven2";
-        out.println("Get:1 " + src + " stable/main all python all " + PY_VER + " [" + mb(size) + "]");
+        out.println("Get:1 " + src + " stable/main all " + p.name + " all " + p.ver + " [" + mb(size) + "]");
         long t0 = System.currentTimeMillis();
         try {
             if (local != null) {
                 try (InputStream is = Files.newInputStream(local)) { transfer(is, part, size); }
-            } else downloadFile(PY_URL, part, size);
+            } else downloadFile(p.url, part, size);
             Files.move(part, jar, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
             try { Files.deleteIfExists(part); } catch (IOException ignored) {}
@@ -225,23 +258,23 @@ public class MobileLinux {
                 size / 1048576.0 / (ms / 1000.0)));
 
         // --- конец: как в Termux ---
-        out.println("Selecting previously unselected package python.");
+        out.println("Selecting previously unselected package " + p.name + ".");
         for (int pct = 0; pct <= 100; pct += 20) {
             out.print("\r(Reading database ... " + pct + "%");
             out.flush();
             pause(150);
         }
         out.println();
-        out.println("Preparing to unpack python_" + PY_VER + "_all.jar ...");
+        out.println("Preparing to unpack " + p.name + "_" + p.ver + "_all.jar ...");
         pause(300);
-        out.println("Unpacking python (" + PY_VER + ") ...");
+        out.println("Unpacking " + p.name + " (" + p.ver + ") ...");
         pause(500);
-        out.println("Setting up python (" + PY_VER + ") ...");
+        out.println("Setting up " + p.name + " (" + p.ver + ") ...");
         pause(500);
         out.println();
-        out.println("Готово. Пакет python установлен: " + jar);
-        out.println("Это Jython (Python 2.7 на Java): print(\"текст\") работает, f-строк нет.");
-        out.println("Запуск:  start python файл.py");
+        out.println("Готово. Пакет " + p.name + " установлен: " + jar);
+        out.println(p.hint);
+        out.println("Запуск:  start " + p.name + (p == PY ? " файл.py" : " файл.js"));
     }
 
     static void progress(long done, long total, long ms) {
@@ -286,7 +319,7 @@ public class MobileLinux {
         }
     }
 
-    // ---------- start python <файл> ----------
+    // ---------- start <язык> <файл> ----------
     static Path findFile(String name) {
         try {
             Path p = Paths.get(name);
@@ -311,27 +344,27 @@ public class MobileLinux {
     static void startCmd(String args) {
         String[] a = args.trim().split("\\s+", 2);
         if (a.length < 2 || a[0].isEmpty() || a[1].trim().isEmpty()) {
-            out.println("Использование: start python <файл.py>   (например: start python dias.py)");
+            out.println("Использование: start python <файл.py>   или   start javascript <файл.js>");
             return;
         }
-        String lang = a[0].toLowerCase();
-        if (!lang.equals("python") && !lang.equals("python3")) {
-            out.println("start: язык '" + a[0] + "' пока не поддерживается. Есть: python");
+        Pkg p = pkgByName(a[0]);
+        if (p == null) {
+            out.println("start: язык '" + a[0] + "' пока не поддерживается. Есть: python, javascript");
             return;
         }
-        startPython(a[1].trim());
+        startPkg(p, a[1].trim());
     }
 
-    static void startPython(String file) {
-        out.println("Starting python...");
+    static void startPkg(Pkg p, String file) {
+        out.println("Starting " + p.name + "...");
         pause(300);
-        out.print("Checking package python... ");
+        out.print("Checking package " + p.name + "... ");
         out.flush();
         pause(300);
-        Path jar = findPyJar();
+        Path jar = findJar(p);
         if (jar == null) {
             out.println("not found");
-            out.println("E: пакет не установлен. Введи: download pkt python");
+            out.println("E: пакет не установлен. Введи: download pkt " + p.name);
             return;
         }
         out.println("ok (" + jar.getFileName() + ")");
@@ -347,28 +380,33 @@ public class MobileLinux {
         out.println("found");
         out.println("  " + f);
 
-        try {   // Jython 2.7 требует строку-кодировку, если в файле есть русские буквы
-            List<String> ls = Files.readAllLines(f, StandardCharsets.UTF_8);
-            boolean nonAscii = false, coding = false;
-            for (int i = 0; i < ls.size(); i++) {
-                for (char ch : ls.get(i).toCharArray()) if (ch > 127) nonAscii = true;
-                if (i < 2 && ls.get(i).contains("coding")) coding = true;
-            }
-            if (nonAscii && !coding) {
-                out.println("W: в файле есть не-латинские буквы. Добавь первой строкой:");
-                out.println("   # -*- coding: utf-8 -*-");
-            }
-        } catch (IOException ignored) {}
+        if (p == PY) {   // Jython 2.7 требует строку-кодировку, если в файле есть русские буквы
+            try {
+                List<String> ls = Files.readAllLines(f, StandardCharsets.UTF_8);
+                boolean nonAscii = false, coding = false;
+                for (int i = 0; i < ls.size(); i++) {
+                    for (char ch : ls.get(i).toCharArray()) if (ch > 127) nonAscii = true;
+                    if (i < 2 && ls.get(i).contains("coding")) coding = true;
+                }
+                if (nonAscii && !coding) {
+                    out.println("W: в файле есть не-латинские буквы. Добавь первой строкой:");
+                    out.println("   # -*- coding: utf-8 -*-");
+                }
+            } catch (IOException ignored) {}
+        }
 
-        out.println("Running python " + f.getFileName() + ":");
+        out.println("Running " + p.name + " " + f.getFileName() + ":");
         out.println("----------------------------------------");
         int code = -1;
         String javaBin = Paths.get(System.getProperty("java.home"), "bin", "java").toString();
         if (!Files.isExecutable(Paths.get(javaBin))) javaBin = "java";
-        List<String> cmd = new ArrayList<>(Arrays.asList(javaBin,
-                "-Dfile.encoding=UTF-8",
-                "-Dpython.cachedir=" + jar.getParent().resolve("cachedir"),
-                "-jar", jar.toString(), f.toString()));
+        List<String> cmd = new ArrayList<>(Arrays.asList(javaBin, "-Dfile.encoding=UTF-8"));
+        if (p.mainClass == null) {
+            cmd.add("-Dpython.cachedir=" + jar.getParent().resolve("cachedir"));
+            cmd.addAll(Arrays.asList("-jar", jar.toString(), f.toString()));
+        } else {
+            cmd.addAll(Arrays.asList("-cp", jar.toString(), p.mainClass, "-e", JS_PRELUDE, "-f", f.toString()));
+        }
         stty("icanon echo isig ixon");
         try {
             code = new ProcessBuilder(cmd).directory(f.getParent().toFile()).inheritIO().start().waitFor();
@@ -385,11 +423,11 @@ public class MobileLinux {
     /** python: сначала установленный пакет (Jython), потом системный Python. */
     static void runPython(String args) {
         List<String> a = args.trim().isEmpty() ? new ArrayList<>() : Arrays.asList(args.trim().split("\\s+"));
-        Path jar = findPyJar();
+        Path jar = findJar(PY);
         if (jar != null) {
             String javaBin = Paths.get(System.getProperty("java.home"), "bin", "java").toString();
             if (!Files.isExecutable(Paths.get(javaBin))) javaBin = "java";
-            List<String> cmd = new ArrayList<>(Arrays.asList(javaBin, "-jar", jar.toString()));
+            List<String> cmd = new ArrayList<>(Arrays.asList(javaBin, "-Dfile.encoding=UTF-8", "-jar", jar.toString()));
             cmd.addAll(a);
             stty("icanon echo isig ixon");
             try {
