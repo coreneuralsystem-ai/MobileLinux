@@ -24,10 +24,28 @@ public class MobileLinux {
     static int rows = 24, cols = 80;
     static volatile Runnable onResize = () -> {};
 
-    static final String PROMPT = "\033[32m~\033[0m $ ";
     static final StringBuilder buf = new StringBuilder();
     static int pos, histIdx, curRow;
     static final List<String> history = new ArrayList<>();
+
+    // текущая папка (в Java её нельзя сменить, поэтому храним сами)
+    static Path cwd = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
+    static final Path BASE = cwd;   // «домашняя» папка программы, показывается как ~
+
+    static Path res(String name) {
+        if (name.equals("~")) return BASE;
+        if (name.startsWith("~/")) return BASE.resolve(name.substring(2)).normalize();
+        return cwd.resolve(name).normalize();
+    }
+
+    static String pathLabel() {
+        if (cwd.equals(BASE)) return "~";
+        if (cwd.startsWith(BASE)) return "~/" + BASE.relativize(cwd).toString().replace('\\', '/');
+        return cwd.toString();
+    }
+
+    static int promptLen() { return pathLabel().length() + 3; }
+    static String promptColored() { return "\033[32m" + pathLabel() + "\033[0m $ "; }
 
     public static void main(String[] args) throws Exception {
         stty("-icanon -echo -isig -ixon min 1");
@@ -55,13 +73,18 @@ public class MobileLinux {
                 else creato(t[1].trim());
             } else if (t[0].equals("start")) {
                 startCmd(t.length > 1 ? t[1] : "");
-            } else if (t[0].equals("pkt")) {
-                pktCmd(t.length > 1 ? t[1] : "");
+            } else if (t[0].equals("go")) {
+                goCmd(t.length > 1 ? t[1] : "");
+            } else if (t[0].equals("help")) {
+                help();
+            } else if (t[0].equals("search") || t[0].equals("list") || t[0].equals("show")
+                    || t[0].equals("remove")) {
+                pkgCmd(t[0], t.length > 1 ? t[1] : "");
             } else if (t[0].equals("download")) {
                 downloadCmd(t.length > 1 ? t[1] : "");
             } else if (t[0].equals("python") || t[0].equals("python3")) {
                 runPython(t.length > 1 ? t[1] : "");
-            } else out.println(t[0] + ": команда не найдена (пока есть: creato, pkt, download, start, python, exit)");
+            } else out.println(t[0] + ": команда не найдена (список команд: help)");
         }
     }
 
@@ -71,12 +94,11 @@ public class MobileLinux {
         out.println("Docs:       https://github.com/coreneuralsystem-ai/MobileLinux");
         out.println();
         out.println("Working with files:");
-        out.println(" - Create:  creato <file>");
-        out.println(" - Packages: pkt search | install | remove | list | show");
-        out.println(" - Install: download pkt <python|javascript>");
-        out.println(" - Start:   start <python|javascript> <file>");
-        out.println(" - Run:     python <file.py>");
-        out.println(" - Exit:    exit");
+        out.println(" - Create:   creato <file>");
+        out.println(" - Install:  download pkt python");
+        out.println(" - Start:    start python <file.py>");
+        out.println(" - Commands: help");
+        out.println(" - Exit:     exit");
         out.println();
         out.println("Report issues at https://github.com/coreneuralsystem-ai/MobileLinux/issues");
         out.println();
@@ -148,7 +170,7 @@ public class MobileLinux {
     /** Ищет файл пакета, который пользователь уже скачал сам. */
     static Path findLocalJar(Pkg p) {
         String home = System.getProperty("user.home");
-        String[] ds = {System.getProperty("user.dir"), home, "/sdcard/Download",
+        String[] ds = {cwd.toString(), home, "/sdcard/Download",
                 "/storage/emulated/0/Download", "/sdcard", home + "/storage/downloads"};
         for (String d : ds) {
             if (d == null) continue;
@@ -215,7 +237,7 @@ public class MobileLinux {
             if (size <= 0) {
                 out.println("failed");
                 out.println("E: нет связи с репозиторием, и рядом нет файла " + p.localGlob + ".");
-                out.println("   Проверь интернет или положи файл в папку " + System.getProperty("user.dir"));
+                out.println("   Проверь интернет или положи файл в папку " + cwd);
                 return;
             }
             pause(300);
@@ -322,7 +344,7 @@ public class MobileLinux {
         }
     }
 
-    // ---------- pkt: менеджер пакетов (как pkg в Termux, но своё название) ----------
+    // ---------- пакеты: search / list / show / remove / help ----------
     static final Pkg[] ALL = {PY, JS};
 
     static String desc(Pkg p) {
@@ -369,22 +391,42 @@ public class MobileLinux {
         out.println("Готово. Пакет " + p.name + " удалён.");
     }
 
-    static void pktCmd(String args) throws IOException {
-        String[] a = args.trim().isEmpty() ? new String[0] : args.trim().split("\\s+");
-        if (a.length == 0) {
-            out.println("pkt — менеджер пакетов Mobile Linux");
-            out.println(" - pkt search [слово]   поиск пакетов");
-            out.println(" - pkt install <пакет>  установить");
-            out.println(" - pkt remove <пакет>   удалить");
-            out.println(" - pkt list             установленные пакеты");
-            out.println(" - pkt show <пакет>     информация о пакете");
-            out.println(" - pkt upgrade          проверить обновления");
-            return;
-        }
-        String sub = a[0];
+    /** go <имя> — войти в папку или открыть файл; go .. — выйти на уровень выше; go — в домашнюю. */
+    static void goCmd(String arg) throws IOException {
+        arg = arg.trim();
+        if (arg.length() >= 2 && ((arg.startsWith("\"") && arg.endsWith("\""))
+                || (arg.startsWith("'") && arg.endsWith("'")))) arg = arg.substring(1, arg.length() - 1);
+        if (arg.isEmpty()) { cwd = BASE; return; }
+        Path target = res(arg);
+        if (Files.isDirectory(target)) cwd = target;
+        else if (Files.isRegularFile(target)) creato(arg);
+        else out.println("go: " + arg + ": нет такой папки или файла");
+    }
+
+    static void help() {
+        out.println("Команды Mobile Linux:");
+        out.println(" creato <файл>         создать файл и открыть редактор");
+        out.println(" go <имя>              войти в папку или файл (go .. — назад)");
+        out.println(" download pkt <пакет>  установить пакет (python, javascript)");
+        out.println(" start <язык> <файл>   запустить файл (python, javascript)");
+        out.println(" python <файл.py>      запустить Python напрямую");
+        out.println(" search [слово]        поиск пакетов");
+        out.println(" list                  установленные пакеты");
+        out.println(" show <пакет>          информация о пакете");
+        out.println(" remove <пакет>        удалить пакет");
+        out.println(" help                  список команд");
+        out.println(" exit                  выход");
+        out.println();
+        out.println("Редактор: ,, (две запятые) — команды: Q сохранить, X выйти, N новый файл.");
+        out.println("          .. (две точки) — назад к тексту.");
+    }
+
+    /** search / list / show / remove — работа с пакетами. */
+    static void pkgCmd(String sub, String rest) throws IOException {
+        String[] a = rest.trim().isEmpty() ? new String[0] : rest.trim().split("\\s+");
         switch (sub) {
             case "search": {
-                String q = a.length > 1 ? a[1].toLowerCase() : "";
+                String q = a.length > 0 ? a[0].toLowerCase() : "";
                 out.println("Sorting... Done");
                 out.println("Full Text Search... Done");
                 for (Pkg p : ALL) {
@@ -396,29 +438,15 @@ public class MobileLinux {
                 }
                 return;
             }
-            case "install": case "reinstall": {
-                if (a.length < 2) { out.println("Использование: pkt install <пакет>"); return; }
-                Pkg p = pkgByName(a[1]);
-                if (p == null) { out.println("E: пакет '" + a[1] + "' не найден. Есть: python, javascript"); return; }
-                installPkg(p);
-                return;
-            }
-            case "remove": case "uninstall": {
-                if (a.length < 2) { out.println("Использование: pkt remove <пакет>"); return; }
-                Pkg p = pkgByName(a[1]);
-                if (p == null) { out.println("E: пакет '" + a[1] + "' не найден."); return; }
-                removePkg(p);
-                return;
-            }
-            case "list": case "list-installed": {
+            case "list": {
                 out.println("Listing... Done");
                 for (Pkg p : ALL) if (findJar(p) != null) out.println(p.name + "/stable " + p.ver + " all [installed]");
                 return;
             }
             case "show": {
-                if (a.length < 2) { out.println("Использование: pkt show <пакет>"); return; }
-                Pkg p = pkgByName(a[1]);
-                if (p == null) { out.println("E: пакет '" + a[1] + "' не найден."); return; }
+                if (a.length < 1) { out.println("Использование: show <пакет>"); return; }
+                Pkg p = pkgByName(a[0]);
+                if (p == null) { out.println("E: пакет '" + a[0] + "' не найден. Есть: python, javascript"); return; }
                 Path jar = findJar(p);
                 out.println("Package: " + p.name);
                 out.println("Version: " + p.ver);
@@ -427,15 +455,13 @@ public class MobileLinux {
                 out.println("Description: " + desc(p));
                 return;
             }
-            case "upgrade": case "update": {
-                step("Reading package lists", 300);
-                step("Building dependency tree", 300);
-                step("Calculating upgrade", 300);
-                out.println("0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.");
+            case "remove": {
+                if (a.length < 1) { out.println("Использование: remove <пакет>"); return; }
+                Pkg p = pkgByName(a[0]);
+                if (p == null) { out.println("E: пакет '" + a[0] + "' не найден. Есть: python, javascript"); return; }
+                removePkg(p);
                 return;
             }
-            default:
-                out.println("pkt: неизвестная подкоманда '" + sub + "'. Введи pkt без аргументов, чтобы увидеть список.");
         }
     }
 
@@ -444,7 +470,7 @@ public class MobileLinux {
         try {
             Path p = Paths.get(name);
             if (p.isAbsolute() && Files.isRegularFile(p)) return p;
-            Path[] roots = {Paths.get(System.getProperty("user.dir")), Paths.get(System.getProperty("user.home"))};
+            Path[] roots = {cwd, Paths.get(System.getProperty("user.home"))};
             for (Path r : roots) {
                 Path c = r.resolve(name).normalize();
                 if (Files.isRegularFile(c)) return c.toAbsolutePath();
@@ -551,7 +577,7 @@ public class MobileLinux {
             cmd.addAll(a);
             stty("icanon echo isig ixon");
             try {
-                new ProcessBuilder(cmd).inheritIO().start().waitFor();
+                new ProcessBuilder(cmd).directory(cwd.toFile()).inheritIO().start().waitFor();
             } catch (IOException e) {
                 out.println("python: не удалось запустить Java: " + e.getMessage());
             } catch (InterruptedException ignored) {
@@ -566,7 +592,7 @@ public class MobileLinux {
             cmd.addAll(a);
             stty("icanon echo isig ixon");
             try {
-                new ProcessBuilder(cmd).inheritIO().start().waitFor();
+                new ProcessBuilder(cmd).directory(cwd.toFile()).inheritIO().start().waitFor();
                 stty("-icanon -echo -isig -ixon min 1");
                 return;
             } catch (IOException e) {
@@ -584,11 +610,11 @@ public class MobileLinux {
         synchronized (LOCK) {
             StringBuilder sb = new StringBuilder();
             if (curRow > 0) sb.append("\033[").append(curRow).append('A');
-            sb.append("\r\033[J").append(PROMPT).append(buf);
-            int endAbs = 4 + buf.length();                       // "~ $ " = 4 символа
+            sb.append("\r\033[J").append(promptColored()).append(buf);
+            int endAbs = promptLen() + buf.length();
             if (endAbs % cols == 0) sb.append(" \r");            // принудительный перенос
             int endRow = endAbs / cols;
-            int curAbs = 4 + pos;
+            int curAbs = promptLen() + pos;
             int row = curAbs / cols, col = curAbs % cols;
             if (row < endRow) sb.append("\033[").append(endRow - row).append('A');
             else if (row > endRow) sb.append("\033[").append(row - endRow).append('B');
@@ -609,7 +635,7 @@ public class MobileLinux {
             int k = readKey();
             if (k == -1) return null;
             if (k == 13 || k == 10) {
-                int endRow = (4 + buf.length()) / cols;
+                int endRow = (promptLen() + buf.length()) / cols;
                 if (endRow > curRow) out.print("\033[" + (endRow - curRow) + "B");
                 out.print("\r\n");
                 out.flush();
@@ -763,7 +789,7 @@ public class MobileLinux {
     }
 
     static void creato(String name) throws IOException {
-        Path p = Paths.get(name).toAbsolutePath();
+        Path p = res(name);
         if (Files.isDirectory(p)) { out.println("creato: " + name + ": это папка"); return; }
         boolean existed = Files.exists(p);
         if (!existed) {
@@ -851,7 +877,7 @@ public class MobileLinux {
                 if (k == 'y' || k == 'Y' || k == 'н' || k == 'Н') save();
                 else if (k != 'n' && k != 'N' && k != 'т' && k != 'Т') { status = "Отменено"; return; }
             }
-            Path np = Paths.get(name).toAbsolutePath();
+            Path np = res(name);
             if (Files.isDirectory(np)) { status = "Это папка"; return; }
             boolean existed = Files.exists(np);
             if (!existed) Files.createFile(np);
