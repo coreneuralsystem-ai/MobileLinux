@@ -55,11 +55,13 @@ public class MobileLinux {
                 else creato(t[1].trim());
             } else if (t[0].equals("start")) {
                 startCmd(t.length > 1 ? t[1] : "");
+            } else if (t[0].equals("pkt")) {
+                pktCmd(t.length > 1 ? t[1] : "");
             } else if (t[0].equals("download")) {
                 downloadCmd(t.length > 1 ? t[1] : "");
             } else if (t[0].equals("python") || t[0].equals("python3")) {
                 runPython(t.length > 1 ? t[1] : "");
-            } else out.println(t[0] + ": команда не найдена (пока есть: creato, download, start, python, exit)");
+            } else out.println(t[0] + ": команда не найдена (пока есть: creato, pkt, download, start, python, exit)");
         }
     }
 
@@ -70,6 +72,7 @@ public class MobileLinux {
         out.println();
         out.println("Working with files:");
         out.println(" - Create:  creato <file>");
+        out.println(" - Packages: pkt search | install | remove | list | show");
         out.println(" - Install: download pkt <python|javascript>");
         out.println(" - Start:   start <python|javascript> <file>");
         out.println(" - Run:     python <file.py>");
@@ -316,6 +319,123 @@ public class MobileLinux {
             transfer(is, dest, total);
         } finally {
             c.disconnect();
+        }
+    }
+
+    // ---------- pkt: менеджер пакетов (как pkg в Termux, но своё название) ----------
+    static final Pkg[] ALL = {PY, JS};
+
+    static String desc(Pkg p) {
+        return p == PY ? "Python 2.7 на Java (Jython " + p.ver + ")" : "JavaScript на Java (Rhino " + p.ver + ")";
+    }
+
+    static boolean confirm() throws IOException {
+        out.print("Do you want to continue? [Y/n] ");
+        out.flush();
+        while (true) {
+            int k = readKey();
+            if (k == -1) return false;
+            if (k == 'y' || k == 'Y' || k == 'н' || k == 'Н') { out.println("Y"); return true; }
+            if (k == 'n' || k == 'N' || k == 'т' || k == 'Т') { out.println("N"); out.println("Abort."); return false; }
+        }
+    }
+
+    static void deleteTree(Path root) {
+        try (java.util.stream.Stream<Path> st = Files.walk(root)) {
+            for (Path x : (Iterable<Path>) st.sorted(Comparator.reverseOrder())::iterator) {
+                try { Files.deleteIfExists(x); } catch (IOException ignored) {}
+            }
+        } catch (Exception ignored) {}
+    }
+
+    static void removePkg(Pkg p) throws IOException {
+        Path jar = findJar(p);
+        if (jar == null) { out.println("Package '" + p.name + "' is not installed, so not removed"); return; }
+        long size = Files.size(jar);
+        step("Reading package lists", 250);
+        step("Building dependency tree", 250);
+        step("Reading state information", 200);
+        out.println("The following packages will be REMOVED:");
+        out.println("  " + p.name);
+        out.println("0 upgraded, 0 newly installed, 1 to remove and 0 not upgraded.");
+        out.println("After this operation, " + mb(size) + " disk space will be freed.");
+        if (!confirm()) return;
+        out.println("Removing " + p.name + " (" + p.ver + ") ...");
+        pause(500);
+        for (Path d : pkgDirs()) {
+            try { Files.deleteIfExists(d.resolve(p.fileName())); } catch (IOException ignored) {}
+            if (p == PY) deleteTree(d.resolve("cachedir"));
+        }
+        out.println("Готово. Пакет " + p.name + " удалён.");
+    }
+
+    static void pktCmd(String args) throws IOException {
+        String[] a = args.trim().isEmpty() ? new String[0] : args.trim().split("\\s+");
+        if (a.length == 0) {
+            out.println("pkt — менеджер пакетов Mobile Linux");
+            out.println(" - pkt search [слово]   поиск пакетов");
+            out.println(" - pkt install <пакет>  установить");
+            out.println(" - pkt remove <пакет>   удалить");
+            out.println(" - pkt list             установленные пакеты");
+            out.println(" - pkt show <пакет>     информация о пакете");
+            out.println(" - pkt upgrade          проверить обновления");
+            return;
+        }
+        String sub = a[0];
+        switch (sub) {
+            case "search": {
+                String q = a.length > 1 ? a[1].toLowerCase() : "";
+                out.println("Sorting... Done");
+                out.println("Full Text Search... Done");
+                for (Pkg p : ALL) {
+                    if (q.isEmpty() || p.name.contains(q) || desc(p).toLowerCase().contains(q)) {
+                        out.println(p.name + "/stable " + p.ver + " all" + (findJar(p) != null ? " [installed]" : ""));
+                        out.println("  " + desc(p));
+                        out.println();
+                    }
+                }
+                return;
+            }
+            case "install": case "reinstall": {
+                if (a.length < 2) { out.println("Использование: pkt install <пакет>"); return; }
+                Pkg p = pkgByName(a[1]);
+                if (p == null) { out.println("E: пакет '" + a[1] + "' не найден. Есть: python, javascript"); return; }
+                installPkg(p);
+                return;
+            }
+            case "remove": case "uninstall": {
+                if (a.length < 2) { out.println("Использование: pkt remove <пакет>"); return; }
+                Pkg p = pkgByName(a[1]);
+                if (p == null) { out.println("E: пакет '" + a[1] + "' не найден."); return; }
+                removePkg(p);
+                return;
+            }
+            case "list": case "list-installed": {
+                out.println("Listing... Done");
+                for (Pkg p : ALL) if (findJar(p) != null) out.println(p.name + "/stable " + p.ver + " all [installed]");
+                return;
+            }
+            case "show": {
+                if (a.length < 2) { out.println("Использование: pkt show <пакет>"); return; }
+                Pkg p = pkgByName(a[1]);
+                if (p == null) { out.println("E: пакет '" + a[1] + "' не найден."); return; }
+                Path jar = findJar(p);
+                out.println("Package: " + p.name);
+                out.println("Version: " + p.ver);
+                out.println("Installed: " + (jar != null ? "yes (" + jar + ")" : "no"));
+                out.println("Source: " + p.url);
+                out.println("Description: " + desc(p));
+                return;
+            }
+            case "upgrade": case "update": {
+                step("Reading package lists", 300);
+                step("Building dependency tree", 300);
+                step("Calculating upgrade", 300);
+                out.println("0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.");
+                return;
+            }
+            default:
+                out.println("pkt: неизвестная подкоманда '" + sub + "'. Введи pkt без аргументов, чтобы увидеть список.");
         }
     }
 
